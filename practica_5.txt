@@ -1,0 +1,125 @@
+#define BLYNK_TEMPLATE_ID "TMPL2kGZsYfqg"
+#define BLYNK_TEMPLATE_NAME "Alarma PIR ESP32"
+#define BLYNK_AUTH_TOKEN "QK6Z_IpI8aSiwX96et4bG6xDuMR-nitT"
+
+#define BLYNK_PRINT Serial
+
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
+#include <BlynkSimpleEsp32.h>
+
+char ssid[] = "AmoIot";
+char pass[] = "sinaiymaria";
+
+// Pines de tu circuito
+const int PIR_PIN = 13;
+const int BUZZER_PIN = 23;
+const int LED_PIN = 22;   
+
+// URL de tu Google Apps Script (Corregida la sintaxis)
+const char* scriptURL = "https://script.google.com/macros/s/AKfycbz0u4h_T6gN5XxnMg_CkEY54SKoAS1sYGR2PnUNbJuOGM6Z9bVDerzQFIdKFptJRTE3/exec";
+
+bool alarmaHabilitada = true; // Por defecto inicia activada
+bool movimientoAnterior = false;
+
+BlynkTimer timer;
+
+// Enviar un evento a Google Sheets
+void registrarEvento(String evento) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Sin Wi-Fi: evento no registrado");
+    return;
+  }
+
+  WiFiClientSecure cliente;
+  cliente.setInsecure();
+
+  HTTPClient https;
+  String url = String(scriptURL) + "?evento=" + evento;
+
+  if (https.begin(cliente, url)) {
+    https.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    int codigo = https.GET();
+
+    if (codigo > 0) {
+      Serial.print("Google Sheets: ");
+      Serial.println(https.getString());
+    } else {
+      Serial.print("Error HTTP: ");
+      Serial.println(codigo);
+    }
+    https.end();
+  }
+}
+
+// Botón de la App Blynk para Activar/Desactivar Alarma (Asignado a V0)
+BLYNK_WRITE(V0) {
+  alarmaHabilitada = param.asInt();
+
+  Serial.println(alarmaHabilitada ? "Alarma ACTIVADA desde App" : "Alarma DESACTIVADA desde App");
+
+  if (!alarmaHabilitada) {
+    digitalWrite(LED_PIN, LOW);
+    digitalWrite(BUZZER_PIN, LOW);
+    if (Blynk.connected()) {
+      Blynk.virtualWrite(V1, 0); // Apaga el LED en la App
+    }
+  }
+}
+
+BLYNK_CONNECTED() {
+  Blynk.syncVirtual(V0);
+}
+
+void revisarSensor() {
+  bool movimiento = (digitalRead(PIR_PIN) == HIGH);
+
+  // Reflejar estado actual del movimiento en el widget LED de Blynk (V1)
+  if (Blynk.connected()) {
+    Blynk.virtualWrite(V1, movimiento ? 1 : 0);
+  }
+
+  bool activar = alarmaHabilitada && movimiento;
+
+  // Enciende LED y Buzzer solo si la alarma está habilitada Y hay movimiento
+  digitalWrite(LED_PIN, activar ? HIGH : LOW);
+  digitalWrite(BUZZER_PIN, activar ? HIGH : LOW);
+
+  // Registrar solo cuando comienza la detección de un nuevo movimiento
+  if (activar && !movimientoAnterior) {
+    Serial.println("¡Alerta! Movimiento detectado");
+
+    // Guardar evento en Google Sheets
+    registrarEvento("Movimiento%20Detectado");
+
+    // Enviar Notificación Push al celular (Usa el Event Code exacto)
+    if (Blynk.connected()) {
+      Blynk.logEvent("alarma_activada", "¡Alerta! Movimiento detectado en el área.");
+    }
+  }
+
+  movimientoAnterior = activar;
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(PIR_PIN, INPUT);
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+
+  digitalWrite(LED_PIN, LOW);
+  digitalWrite(BUZZER_PIN, LOW);
+
+  Serial.println("Iniciando conexión Wi-Fi y Blynk...");
+  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
+
+  // Revisa el sensor cada 300 ms
+  timer.setInterval(300L, revisarSensor);
+}
+
+void loop() {
+  Blynk.run();
+  timer.run();
+}
